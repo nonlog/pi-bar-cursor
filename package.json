@@ -1,0 +1,46 @@
+{
+  "name": "pi-bar-cursor",
+  "version": "0.1.0",
+  "description": "Pi extension: replace the filled reverse-video block caret with a terminal bar cursor.",
+  "type": "module",
+  "license": "MIT",
+  "author": "nonlog",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "cursor",
+    "bar-cursor",
+    "tui"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nonlog/pi-bar-cursor.git"
+  },
+  "homepage": "https://github.com/nonlog/pi-bar-cursor#readme",
+  "bugs": {
+    "url": "https://github.com/nonlog/pi-bar-cursor/issues"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  }
+}
