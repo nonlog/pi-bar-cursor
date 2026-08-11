@@ -16,9 +16,8 @@
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Input } from "@earendil-works/pi-tui";
 
-// Steady vertical bar. Alternatives: 5 blink bar, 4 steady underline, 2 steady block
-const CURSOR_SHAPE_BAR = "\x1b[6 q";
-const CURSOR_SHAPE_BLOCK = "\x1b[2 q";
+// Blinking vertical bar. Alternatives: 6 steady bar, 4 steady underline, 2 steady block
+const CURSOR_SHAPE_BAR = "\x1b[5 q";
 const SHOW_CURSOR = "\x1b[?25h";
 
 // Editor uses \x1b[0m; Input uses \x1b[27m. Match both.
@@ -146,13 +145,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", (event) => {
 		active = false;
-		// Only restore block when leaving pi entirely; keep bar across /reload.
-		if (event.reason === "quit") {
-			try {
-				process.stdout.write(CURSOR_SHAPE_BLOCK);
-			} catch {
-				// ignore
-			}
-		}
+		// Do NOT restore block on quit: Windows Terminal may not re-apply its own
+		// configured default cursor shape after DECSCUSR, leaving a block.
+		// Leaving the terminal's configured shape (e.g. bar) untouched avoids that.
+		void event;
 	});
 }
