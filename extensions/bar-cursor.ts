@@ -1,94 +1,113 @@
 /**
- * Keep Pi's input caret as an accent-colored, self-blinking bar cursor
- * (not the default reverse-video block).
+ * Keep Pi's input caret as an accent-colored, blinking hardware bar cursor.
  *
- * v4 changes:
- * - Caret on a grapheme now inserts the accent `│` bar BEFORE the glyph
- *   instead of reverse-video-tinting the glyph. The character stays visible
- *   and uncolored, so arrow-key movement no longer shows an accent block
- *   "covering" the character, and IME composition text (pinyin) is never
- *   tinted with the accent color.
- * - Blink still swaps bar↔space (or bar+glyph ↔ space+glyph) so the column
- *   width never changes — nothing jumps or shifts.
- * - v3 had: caret-on-glyph → accent reverse-video of that glyph, which
- *   looked like a covering accent block and tinted pinyin under the caret.
- * - Do NOT force showHardwareCursor. A visible hardware caret during agent
- *   activity produced a flickering bar + stray IME preview at the wrong spot.
- *   Hidden hardware cursor still gets positioned for IME via CURSOR_MARKER.
- * - Keep stripping fake blocks on Editor and Input prototypes so all
- *   editors/dialogs show the same accent caret.
+ * Pi renders a fake reverse-video caret in the Editor/Input output. A text
+ * glyph cannot be drawn on top of a character without consuming a column, so
+ * the extension removes only the fake SGR styling and leaves the original
+ * grapheme in place. The terminal's hardware cursor then draws the bar at the
+ * CURSOR_MARKER column, overlaying the same cell without shifting any text.
+ *
+ * While the agent is active, the hardware cursor and marker are suppressed:
+ * this prevents a visible caret and prevents Windows IME composition previews
+ * from being repeatedly repositioned into the scrolling transcript/Working
+ * row. When the agent settles, the marker and blinking hardware bar return.
  */
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Input, type TUI } from "@earendil-works/pi-tui";
 
 // Editor uses \x1b[0m; Input uses \x1b[27m. Match both.
 const FAKE_BLOCK_CURSOR = /\x1b\[7m([\s\S]*?)\x1b\[(?:0|27)m/g;
+const CURSOR_MARKER = "\x1b_pi:c\x07";
 
-/** Blink cadence (ms) — matches typical terminal caret blink (~530ms half-period). */
-const CURSOR_BLINK_MS = 530;
+// DECSCUSR: 5 = blinking bar, 0 = terminal's configured default shape.
+const CURSOR_SHAPE_BAR = "\x1b[5 q";
+const CURSOR_SHAPE_DEFAULT = "\x1b[0 q";
+const SHOW_CURSOR = "\x1b[?25h";
+
+// OSC 12 sets the terminal cursor color; OSC 112 restores its configured color.
+const CURSOR_COLOR_RESET = "\x1b]112\x07";
 
 let patched = false;
-let accentFg = "\x1b[38;2;138;190;183m"; // fallback: dark theme accent (#8abeb7)
+let stdoutPatched = false;
+let active = false;
+let agentActive = false;
+let lastTui: TUI | null = null;
+let cursorColor = "#8abeb7"; // dark theme accent fallback
+let rawStdoutWrite: ((chunk: any, encoding?: any, callback?: any) => any) | null = null;
 
-// Self-drawn blink state.
-let blinkOn = true;
-let blinkTimer: ReturnType<typeof setInterval> | null = null;
-/** Editor instance last rendered while focused — target for re-renders. */
-let focusedEditor: (TUI & { focused?: boolean }) | null = null;
-let focusedEditorTui: TUI | null = null;
+function writeRaw(data: string): void {
+	try {
+		if (rawStdoutWrite) {
+			rawStdoutWrite(data);
+		} else {
+			process.stdout.write(data);
+		}
+	} catch {
+		// Ignore non-TTY/shutdown writes.
+	}
+}
 
-function makeBarCursor(): string {
-	return `${accentFg}\u2502\x1b[0m`;
+function captureCursorColor(fgAnsi: string): void {
+	const rgb = /\x1b\[38;2;(\d+);(\d+);(\d+)m/.exec(fgAnsi);
+	if (rgb) {
+		cursorColor = `#${Number(rgb[1]).toString(16).padStart(2, "0")}${Number(rgb[2])
+			.toString(16)
+			.padStart(2, "0")}${Number(rgb[3]).toString(16).padStart(2, "0")}`;
+	}
+}
+
+function applyCursorAppearance(): void {
+	if (!active) return;
+	writeRaw(`\x1b]12;${cursorColor}\x07${CURSOR_SHAPE_BAR}`);
+}
+
+function setHardwareCursorVisible(visible: boolean): void {
+	if (!lastTui) return;
+	try {
+		if (lastTui.getShowHardwareCursor() !== visible) {
+			lastTui.setShowHardwareCursor(visible);
+		}
+	} catch {
+		// TUI may already be tearing down during reload/quit.
+	}
 }
 
 /**
- * Replace pi's fake reverse-video block caret with our accent caret.
- * The caret column width never changes between blink phases (bar↔space),
- * so nothing jumps or shifts while blinking.
- * Returns the same array (mutated in place).
+ * Strip only Pi's fake caret styling. The captured grapheme/space is kept at
+ * exactly its original width. The hardware cursor overlays the marker column.
  */
 function stripFakeBlock(lines: string[]): string[] {
-	const bar = makeBarCursor();
-	for (let i = 0; i < lines.length; i++) {
-		lines[i] = lines[i].replace(FAKE_BLOCK_CURSOR, (_match, captured: string) => {
-			if (blinkOn) {
-				// On phase: show the accent caret.
-				if (captured.trim() === "") {
-					// Caret at end-of-text (block is an inverted space) → accent bar.
-					return bar;
+	return lines.map((line) => {
+		const withoutFakeStyle = line.replace(FAKE_BLOCK_CURSOR, (_match, captured: string) => captured);
+		return agentActive ? withoutFakeStyle.split(CURSOR_MARKER).join("") : withoutFakeStyle;
+	});
+}
+
+function patchStdoutShowCursor(): void {
+	if (stdoutPatched) return;
+	stdoutPatched = true;
+
+	const stdout = process.stdout as NodeJS.WriteStream & {
+		write: (...args: any[]) => any;
+	};
+	rawStdoutWrite = stdout.write.bind(stdout);
+
+	stdout.write = ((chunk: any, encoding?: any, callback?: any) => {
+		let output = chunk;
+		if (active && chunk != null) {
+			if (typeof chunk === "string") {
+				if (chunk.includes(SHOW_CURSOR)) {
+					output = chunk.split(SHOW_CURSOR).join(`${SHOW_CURSOR}${CURSOR_SHAPE_BAR}`);
 				}
-				// Caret on a grapheme → accent bar inserted BEFORE the glyph, so the
-				// character under the caret stays visible and uncolored (no reverse-video
-				// block over it, and IME composition text like pinyin is never tinted).
-				return `${bar}${captured}`;
+			} else if (Buffer.isBuffer(chunk)) {
+				const text = chunk.toString("utf8");
+				if (text.includes(SHOW_CURSOR)) {
+					output = Buffer.from(text.split(SHOW_CURSOR).join(`${SHOW_CURSOR}${CURSOR_SHAPE_BAR}`), "utf8");
+				}
 			}
-			// Off phase: a space takes the bar's column so the caret's column width
-			// never changes (no jump/flicker) — the glyph itself stays untouched.
-			if (captured.trim() === "") {
-				return " ";
-			}
-			return ` ${captured}`;
-		});
-	}
-	return lines;
-}
-
-function startBlink(): void {
-	if (blinkTimer) return;
-	blinkTimer = setInterval(() => {
-		blinkOn = !blinkOn;
-		// Re-render the focused editor so the new phase shows up.
-		if (focusedEditorTui && focusedEditor?.focused) {
-			focusedEditorTui.requestRender();
 		}
-	}, CURSOR_BLINK_MS);
-}
-
-function stopBlink(): void {
-	if (blinkTimer) {
-		clearInterval(blinkTimer);
-		blinkTimer = null;
-	}
+		return rawStdoutWrite?.(output, encoding, callback);
+	}) as typeof stdout.write;
 }
 
 function patchEditorRender(): void {
@@ -102,12 +121,14 @@ function patchEditorRender(): void {
 	};
 	const originalEditorRender = editorProto.render;
 	editorProto.render = function (this: any, width: number): string[] {
-		focusedEditor = this;
-		focusedEditorTui = this.tui ?? null;
-		if (this.focused) {
-			startBlink();
-		} else {
-			stopBlink();
+		if (this.tui) {
+			lastTui = this.tui as TUI;
+			// The marker is enough for TUI to position the hardware cursor. Enabling
+			// it while idle is harmless even when another focused component owns the
+			// marker; TUI hides it when no marker is present.
+			if (active && !agentActive) {
+				setHardwareCursorVisible(true);
+			}
 		}
 		return stripFakeBlock(originalEditorRender.call(this, width));
 	};
@@ -119,22 +140,49 @@ function patchEditorRender(): void {
 	inputProto.render = function (this: unknown, width: number): string[] {
 		return stripFakeBlock(originalInputRender.call(this, width));
 	};
+
+	patchStdoutShowCursor();
 }
 
 export default function (pi: ExtensionAPI) {
-	// Patch as early as possible (module evaluate + extension bind)
+	// Patch as early as possible (module evaluate + extension bind).
 	patchEditorRender();
 
 	pi.on("session_start", (_event, ctx) => {
-		patchEditorRender();
-		// Capture the current theme's accent foreground for the fake caret.
+		if (ctx.mode !== "tui") return;
+		active = true;
+		agentActive = false;
 		try {
-			const theme = (ctx.ui as any)?.theme;
-			if (theme?.getFgAnsi) {
-				accentFg = theme.getFgAnsi("accent");
-			}
+			captureCursorColor(ctx.ui.theme.getFgAnsi("accent"));
 		} catch {
-			// keep fallback
+			// Keep the dark-theme fallback.
+		}
+		applyCursorAppearance();
+		setHardwareCursorVisible(true);
+	});
+
+	pi.on("agent_start", (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		agentActive = true;
+		setHardwareCursorVisible(false);
+	});
+
+	// Keep the cursor hidden through agent_end: automatic retry/compaction or
+	// queued continuation can still run. agent_settled is the true idle point.
+	pi.on("agent_settled", (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		agentActive = false;
+		applyCursorAppearance();
+		setHardwareCursorVisible(true);
+	});
+
+	pi.on("session_shutdown", (event) => {
+		if (!active) return;
+		active = false;
+		agentActive = false;
+		if (event.reason === "quit") {
+			// Return both properties to Windows Terminal's profile defaults.
+			writeRaw(`${CURSOR_SHAPE_DEFAULT}${CURSOR_COLOR_RESET}`);
 		}
 	});
 }
