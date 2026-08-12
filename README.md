@@ -1,22 +1,24 @@
 # pi-bar-cursor
 
-Pi coding-agent extension that replaces the filled reverse-video **block** caret with a terminal **bar** cursor (`|`).
+Pi coding-agent extension that replaces the filled reverse-video **block** caret with an accent-colored **bar** cursor (`│`).
 
 ## Why
 
 Pi draws a fake caret with inverse video (`\x1b[7m...\x1b[0m`). That looks like a solid box. This extension:
 
 1. Strips the fake block from `Editor` / `Input` renders (prototype patch so it survives editor rebinds)
-2. Enables the hardware cursor (`showHardwareCursor`)
-3. Re-asserts a steady bar shape via DECSCUSR (`CSI 6 SP q`) after every show-cursor sequence and after agent turns
+2. Replaces it with a `│` glyph colored with the theme's **accent** color (same color family as the `pi-claude-code-tui` caret)
+
+## Why not the hardware cursor / DECSCUSR?
+
+The first version enabled the hardware cursor and asserted a bar shape via DECSCUSR (`CSI 6 SP q`). That produced two problems in practice:
+
+- While the agent streams output and the screen scrolls, the visible hardware caret appears at the wrong spot and "jumps" (and can show stray IME composition previews).
+- Windows Terminal does not reliably re-apply its configured default cursor shape after a DECSCUSR override, leaving a block caret after quitting pi.
+
+The fake-glyph approach avoids all of that: the caret is drawn only inside the editor's own render output, so it never escapes into the scrolling transcript, and nothing is written to the terminal on quit.
 
 ## Install
-
-```bash
-pi install npm:pi-bar-cursor
-```
-
-Or from git:
 
 ```bash
 pi install git:github.com/nonlog/pi-bar-cursor
@@ -24,31 +26,20 @@ pi install git:github.com/nonlog/pi-bar-cursor
 
 Then `/reload` (or restart Pi).
 
-Also recommended in `~/.pi/agent/settings.json`:
-
-```json
-{
-  "showHardwareCursor": true
-}
-```
+No `showHardwareCursor` setting is needed. In fact, keep it **false** (the default) so the hardware caret stays hidden during agent activity.
 
 ## Usage
 
-No commands. After install, the input caret should stay a bar.
+No commands. After install, the input caret is an accent-colored bar (`│`) inside the editor and all input dialogs.
 
-### If it still looks like a block
+The accent color tracks the active theme: switching themes re-reads `theme.getFgAnsi("accent")` on `session_start`.
 
-Your terminal may ignore DECSCUSR. Set the terminal cursor shape to **Bar**:
+## Customizing
 
-- **Windows Terminal**: Settings → Appearance → Cursor shape → Bar  
-  or `"cursorShape": "bar"` in the profile
+To use a plain ASCII `|` instead of the box-drawing `│`, change the `\u2502` escape in `extensions/bar-cursor.ts` to `"|"`. To pick a fixed color instead of the theme accent, replace `accentFg`'s fallback value.
 
 ## Notes
 
-- On Pi quit, the extension restores a steady block shape so other apps are not stuck on bar.
-- `/reload` keeps the bar shape (does not restore block).
 - Compatible with `@earendil-works/pi-coding-agent` / `@earendil-works/pi-tui`.
-
-## License
-
-MIT
+- Coexists with `pi-claude-code-tui`: both patch the fake cursor at render time; whichever patches later wins per line, and both render an accent-colored caret.
+- The caret is static (does not blink) because it is a drawn glyph, not the terminal's hardware cursor.
