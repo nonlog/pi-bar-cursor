@@ -2,17 +2,16 @@
  * Keep Pi's input caret as an accent-colored, self-blinking bar cursor
  * (not the default reverse-video block).
  *
- * v3 changes:
- * - Self-drawn blinking: a module-level `blinkOn` flag flips every
- *   CURSOR_BLINK_MS and triggers `tui.requestRender()` while the editor is
- *   focused. Zero-width-change blink: at the end-of-text the bar swaps with
- *   a space (1 col ↔ 1 col), on a character it swaps accent-reverse-video
- *   with the plain glyph (same width) — so nothing jumps or shifts.
- * - No more dropping the character under the caret: the old code replaced
- *   the reverse-video glyph with `│`, which deleted the character and made
- *   arrow movement look like it "covered" a character. Now a caret on a
- *   grapheme renders that grapheme in accent reverse-video (like a real
- *   block caret but colored), and only the end-of-text caret is the `│` bar.
+ * v4 changes:
+ * - Caret on a grapheme now inserts the accent `│` bar BEFORE the glyph
+ *   instead of reverse-video-tinting the glyph. The character stays visible
+ *   and uncolored, so arrow-key movement no longer shows an accent block
+ *   "covering" the character, and IME composition text (pinyin) is never
+ *   tinted with the accent color.
+ * - Blink still swaps bar↔space (or bar+glyph ↔ space+glyph) so the column
+ *   width never changes — nothing jumps or shifts.
+ * - v3 had: caret-on-glyph → accent reverse-video of that glyph, which
+ *   looked like a covering accent block and tinted pinyin under the caret.
  * - Do NOT force showHardwareCursor. A visible hardware caret during agent
  *   activity produced a flickering bar + stray IME preview at the wrong spot.
  *   Hidden hardware cursor still gets positioned for IME via CURSOR_MARKER.
@@ -44,7 +43,8 @@ function makeBarCursor(): string {
 
 /**
  * Replace pi's fake reverse-video block caret with our accent caret.
- * Zero-width-change: the replacement has the same column width as the block.
+ * The caret column width never changes between blink phases (bar↔space),
+ * so nothing jumps or shifts while blinking.
  * Returns the same array (mutated in place).
  */
 function stripFakeBlock(lines: string[]): string[] {
@@ -57,12 +57,17 @@ function stripFakeBlock(lines: string[]): string[] {
 					// Caret at end-of-text (block is an inverted space) → accent bar.
 					return bar;
 				}
-				// Caret on a grapheme → accent reverse-video of that grapheme,
-				// so the character under the caret stays visible (no "covering").
-				return `${accentFg}\x1b[7m${captured}\x1b[0m`;
+				// Caret on a grapheme → accent bar inserted BEFORE the glyph, so the
+				// character under the caret stays visible and uncolored (no reverse-video
+				// block over it, and IME composition text like pinyin is never tinted).
+				return `${bar}${captured}`;
 			}
-			// Off phase: show the underlying text plainly (caret "blinks off").
-			return captured;
+			// Off phase: a space takes the bar's column so the caret's column width
+			// never changes (no jump/flicker) — the glyph itself stays untouched.
+			if (captured.trim() === "") {
+				return " ";
+			}
+			return ` ${captured}`;
 		});
 	}
 	return lines;
