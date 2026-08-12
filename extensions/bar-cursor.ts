@@ -72,6 +72,14 @@ function setHardwareCursorVisible(visible: boolean): void {
 	}
 }
 
+function requestCursorRender(): void {
+	try {
+		lastTui?.requestRender();
+	} catch {
+		// TUI may already be tearing down during reload/quit.
+	}
+}
+
 /**
  * Strip only Pi's fake caret styling. The captured grapheme/space is kept at
  * exactly its original width. The hardware cursor overlays the marker column.
@@ -123,11 +131,10 @@ function patchEditorRender(): void {
 	editorProto.render = function (this: any, width: number): string[] {
 		if (this.tui) {
 			lastTui = this.tui as TUI;
-			// The marker is enough for TUI to position the hardware cursor. Enabling
-			// it while idle is harmless even when another focused component owns the
-			// marker; TUI hides it when no marker is present.
-			if (active && !agentActive) {
-				setHardwareCursorVisible(true);
+			// Keep each newly-created TUI in the correct lifecycle state too. This
+			// matters after reloads/session switches while an agent is active.
+			if (active) {
+				setHardwareCursorVisible(!agentActive);
 			}
 		}
 		return stripFakeBlock(originalEditorRender.call(this, width));
@@ -159,12 +166,16 @@ export default function (pi: ExtensionAPI) {
 		}
 		applyCursorAppearance();
 		setHardwareCursorVisible(true);
+		requestCursorRender();
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		agentActive = true;
 		setHardwareCursorVisible(false);
+		// If the setting was already false, setShowHardwareCursor() is a no-op;
+		// explicitly repaint so the marker is still removed from the current frame.
+		requestCursorRender();
 	});
 
 	// Keep the cursor hidden through agent_end: automatic retry/compaction or
@@ -174,6 +185,7 @@ export default function (pi: ExtensionAPI) {
 		agentActive = false;
 		applyCursorAppearance();
 		setHardwareCursorVisible(true);
+		requestCursorRender();
 	});
 
 	pi.on("session_shutdown", (event) => {
