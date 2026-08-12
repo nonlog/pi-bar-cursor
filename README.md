@@ -8,6 +8,7 @@ Pi draws a fake caret with inverse video (`\x1b[7m...\x1b[0m`). That looks like 
 
 1. Strips the fake block from `Editor` / `Input` renders (prototype patch so it survives editor rebinds)
 2. Replaces it with a `│` glyph colored with the theme's **accent** color (same color family as the `pi-claude-code-tui` caret)
+3. Self-draws the **blink**: while the editor is focused, a 530ms timer flips the caret on/off and triggers `tui.requestRender()` (v3)
 
 ## Why not the hardware cursor / DECSCUSR?
 
@@ -30,9 +31,15 @@ No `showHardwareCursor` setting is needed. In fact, keep it **false** (the defau
 
 ## Usage
 
-No commands. After install, the input caret is an accent-colored bar (`│`) inside the editor and all input dialogs.
+No commands. After install, the input caret is an accent-colored bar (`│`) inside the editor and all input dialogs. The caret **blinks** while the editor is focused, and stops while the agent streams.
 
 The accent color tracks the active theme: switching themes re-reads `theme.getFgAnsi("accent")` on `session_start`.
+
+### Caret-on-glyph behavior
+
+- At the end of the input the caret is a `│` bar.
+- When the caret sits **on** a grapheme (e.g. arrow keys into a word), the grapheme itself is shown in accent reverse-video — the character under the caret is never replaced or hidden, so moving left/right never "covers" or drops a character.
+- The blink swaps bar↔space and reverse-video↔plain, so the column width never changes (no jump/flicker).
 
 ## Customizing
 
