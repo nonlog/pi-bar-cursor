@@ -1,0 +1,35 @@
+name: Cursor frame regression
+on:
+  push:
+    branches: [master, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cursor-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Node 24 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check extension syntax
+        run: node --check extensions/bar-cursor.ts
+      - name: Verify frame ordering and live wrapper upgrades
+        run: npm test
+      - name: Install isolated Pi renderer for integration tests
+        run: npm install --prefix .ci-runtime --no-package-lock --ignore-scripts --no-audit --no-fund @earendil-works/pi-tui@1.1.0
+      - name: Verify with the real Pi regular renderer
+        run: node --test tests/pi-renderer.integration.ts
+      - name: Check distributable files
+        run: npm pack --dry-run

@@ -1,6 +1,6 @@
 {
   "name": "pi-bar-cursor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension: replace the filled reverse-video block caret with a terminal bar cursor.",
   "type": "module",
   "license": "MIT",
@@ -23,7 +23,9 @@
   },
   "files": [
     "extensions",
+    "lib",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "pi": {
@@ -42,5 +44,8 @@
     "@earendil-works/pi-tui": {
       "optional": true
     }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.ts"
   }
 }

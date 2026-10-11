@@ -16,6 +16,7 @@
  */
 import { CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Input, type TUI } from "@earendil-works/pi-tui";
+import { installOrderedWriter, flushPendingWrite, type TerminalLike, type TerminalWriteState } from "../lib/terminal-write-order.ts";
 
 // Editor uses \x1b[0m; Input uses \x1b[27m. Match both.
 const FAKE_BLOCK_CURSOR = /\x1b\[7m([\s\S]*?)\x1b\[(?:0|27)m/g;
@@ -28,18 +29,8 @@ const CURSOR_SHAPE_DEFAULT = "\x1b[0 q";
 // OSC 12 sets the terminal cursor color; OSC 112 restores its configured color.
 const CURSOR_COLOR_RESET = "\x1b]112\x07";
 const SHARED_STATE = Symbol.for("pi-bar-cursor.shared-state");
-const TERMINAL_WRITE_STATE = Symbol.for("pi-bar-cursor.terminal-write-state");
-const SYNC_OUTPUT_END = "\x1b[?2026l";
 
 type RenderMethod = (this: any, width: number) => string[];
-type TerminalLike = {
-	write: (data: string) => void;
-};
-type TerminalWriteState = {
-	owner: CursorState;
-	originalWrite: (data: string) => void;
-	pendingSyncEnd: string;
-};
 
 type CursorState = {
 	active: boolean;
@@ -127,67 +118,12 @@ function restoreCursorAppearance(): void {
 function installTerminalWriteOrdering(tui: TUI): void {
 	const terminal = (tui as any).terminal as TerminalLike | undefined;
 	if (!terminal || typeof terminal.write !== "function") return;
-
-	const holder = terminal as TerminalLike & Record<PropertyKey, unknown>;
-	const existing = holder[TERMINAL_WRITE_STATE] as TerminalWriteState | undefined;
-	if (existing) {
-		existing.owner = state;
-		state.terminalWriteStates.add(existing);
-		return;
-	}
-
-	const writeState: TerminalWriteState = {
-		owner: state,
-		originalWrite: terminal.write.bind(terminal),
-		pendingSyncEnd: "",
-	};
-	Object.defineProperty(holder, TERMINAL_WRITE_STATE, {
-		configurable: false,
-		enumerable: false,
-		writable: false,
-		value: writeState,
-	});
-
-	terminal.write = (data: string): void => {
-		if (writeState.pendingSyncEnd) {
-			const pending = writeState.pendingSyncEnd;
-			writeState.pendingSyncEnd = "";
-			writeState.originalWrite(data);
-			writeState.originalWrite(pending);
-			return;
-		}
-
-		if (!writeState.owner.active) {
-			writeState.originalWrite(data);
-			return;
-		}
-
-		const end = data.lastIndexOf(SYNC_OUTPUT_END);
-		if (end !== -1 && end + SYNC_OUTPUT_END.length === data.length) {
-			// TUI currently releases synchronized output before positioning the
-			// hardware cursor. Windows Terminal can paint IME composition at the
-			// last screen-write position during that gap. Keep the frame open until
-			// the following position command has been written.
-			writeState.originalWrite(data.slice(0, end));
-			writeState.pendingSyncEnd = SYNC_OUTPUT_END;
-			return;
-		}
-
-		writeState.originalWrite(data);
-	};
-
-	state.terminalWriteStates.add(writeState);
+	state.terminalWriteStates.add(installOrderedWriter(terminal, state));
 }
 
 function flushPendingTerminalWrites(): void {
-	for (const writeState of state.terminalWriteStates) {
-		if (!writeState.pendingSyncEnd) continue;
-		const pending = writeState.pendingSyncEnd;
-		writeState.pendingSyncEnd = "";
-		writeState.originalWrite(pending);
-	}
+	for (const writeState of state.terminalWriteStates) flushPendingWrite(writeState);
 }
-
 function setHardwareCursorVisible(visible: boolean, tui = state.lastTui): void {
 	if (!tui) return;
 	state.lastTui = tui;

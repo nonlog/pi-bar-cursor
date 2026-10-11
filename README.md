@@ -69,10 +69,20 @@ cursor remains visible during agent activity because Pi cannot observe
 Windows Terminal's internal composition-start/end state. It restores the normal
 blinking appearance after `agent_settled`.
 
-For Windows Terminal IME positioning, synchronized TUI output is held open
-until Pi's following hardware-cursor position command has been written. This
-prevents the IME composition overlay from being painted at the last row written
-by a `Working...` or footer refresh.
+For Windows Terminal IME positioning, synchronized TUI output includes Pi's
+following synchronous hardware-cursor position command. The frame always closes
+by the end of the current render stack (a microtask fallback handles cursorless
+overlays). It never waits for the next key press or background update.
+
+Versions before 0.1.1 could leave `CSI ?2026l` pending when an overlay hid the
+cursor without a `terminal.write()` call. Herdr's native window would show the
+previous frame even though the `/open-tui`, `/settings`, or question component
+was already rendered and receiving keys. Version 0.1.1 fixes that in **regular
+mode**, without switching to fullscreen or changing Pi/Herdr core code.
+
+After updating, run `/reload` in each existing Pi session when it is safe to do
+so. The new wrapper replaces a live legacy wrapper without accumulating hooks.
+See [CHANGELOG.md](CHANGELOG.md) for regression coverage.
 
 ## Notes
 
